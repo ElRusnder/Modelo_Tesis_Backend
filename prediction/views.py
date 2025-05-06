@@ -43,7 +43,7 @@ def predict(request):
 
             lat, lon = coordenadas[departamento]["lat"], coordenadas[departamento]["lon"]
 
-            api_key = '15b9eb841a2eb8d126c001585efbcb00'  # Reemplazar con tu clave de API
+            api_key = ''  # Reemplazar con tu clave de API
             url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={api_key}&units=metric"
             response = requests.get(url)
 
