@@ -1,3 +1,7 @@
+import matplotlib
+
+matplotlib.use('Agg')  # Establecer el backend a 'Agg' para evitar problemas con GUI en servidores
+
 import folium
 from folium.plugins import HeatMap
 import io
@@ -23,6 +27,27 @@ except Exception as e:
     model = None
     model_error = str(e)  # Guardamos el error al cargar el modelo
     print(f"Error al cargar el modelo: {model_error}")
+
+
+# Función para generar recomendaciones agrícolas basadas en las condiciones climáticas
+def generar_recomendaciones_texto(temperaturas_futuras, precipitacion_media, humedad_media):
+    # Convertir las predicciones a flotantes estándar de Python (para evitar np.float64)
+    temperaturas_futuras = [float(temp) for temp in temperaturas_futuras]
+
+    # Recomendaciones basadas en las condiciones climáticas proyectadas (simplificado)
+    texto_entrada = f"Las predicciones de temperatura para los próximos 8 años son las siguientes: {temperaturas_futuras}. "
+
+    if max(temperaturas_futuras) > 30:
+        texto_entrada += "Con temperaturas muy altas proyectadas, se recomienda optar por cultivos más resistentes al calor, como el maíz, sorgo o ciertos tipos de frijoles. "
+        texto_entrada += "También es importante implementar técnicas de riego por goteo y usar sistemas de sombreo para reducir el estrés térmico."
+    elif precipitacion_media > 150:
+        texto_entrada += "Con una alta probabilidad de lluvias, es recomendable cultivar arroz o vegetales que toleren el exceso de agua. "
+        texto_entrada += "Es esencial implementar técnicas de drenaje para evitar el anegamiento de los cultivos."
+    else:
+        texto_entrada += "Con temperaturas moderadas y lluvias regulares, se sugiere diversificar los cultivos. Se pueden aplicar prácticas agroforestales para proteger los suelos y mejorar la calidad del agua."
+
+    return texto_entrada
+
 
 @csrf_exempt
 def predict(request):
@@ -54,48 +79,54 @@ def predict(request):
             temperatura = clima_data["main"]["temp"]
             precipitacion = clima_data.get("rain", {}).get("1h", 0)
             humedad = clima_data["main"]["humidity"]
-            viento = clima_data["wind"]["speed"]
             año = data.get("año")
 
             if not año:
                 return JsonResponse({"error": "Falta el campo de año"}, status=400)
 
-            input_data = np.array([[temperatura, precipitacion, humedad, viento, año]])
+            # Usar pandas para asegurarnos de que los datos tienen nombres de columnas correctos
+            import pandas as pd
+            input_data = pd.DataFrame([[temperatura, precipitacion, humedad, 0, año]],
+                                      columns=["temperatura", "precipitacion_mm", "humedad_relativa",
+                                               "velocidad_viento", "year"])
 
             if model is None:
                 return JsonResponse({"error": f"Error al cargar el modelo: {model_error}"}, status=500)
 
-            predicciones = []
+            recomendaciones = []
             points = []  # Lista para los puntos del mapa de calor
 
-            # Definir el rango de años para las predicciones
-            años_futuros = list(range(año, año + 8))  # Predicciones de los próximos 8 años
+            # Definir el rango de años para las recomendaciones
+            años_futuros = list(range(año, año + 8))  # Recomendaciones para los próximos 8 años
 
+            temperaturas_futuras = []
             for year in años_futuros:
-                input_data = np.array([[temperatura, precipitacion, humedad, viento, year]])
-                prediccion = model.predict(input_data)
-                predicciones.append(prediccion[0])  # Almacenamos la predicción para cada año
+                input_data = pd.DataFrame([[temperatura, precipitacion, humedad, 0, year]],
+                                          columns=["temperatura", "precipitacion_mm", "humedad_relativa",
+                                                   "velocidad_viento", "year"])
+                recomendacion = model.predict(input_data)
+                temperaturas_futuras.append(recomendacion[0])  # Almacenamos la recomendación para cada año
 
-                # Añadir más puntos para cada predicción (más dispersión)
-                for _ in range(10):  # Generamos 10 puntos adicionales por predicción
+                # Añadir más puntos para cada recomendación (más dispersión)
+                for _ in range(10):  # Generamos 10 puntos adicionales por recomendación
                     lat_offset = random.uniform(-0.1, 0.1)  # Variación aleatoria mayor en latitud
                     lon_offset = random.uniform(-0.1, 0.1)  # Variación aleatoria mayor en longitud
 
-                    # Añadir los puntos al mapa (usamos latitud, longitud y la predicción de temperatura como "valor" de calor)
-                    points.append([lat + lat_offset, lon + lon_offset, prediccion[0]])
+                    # Añadir los puntos al mapa (usamos latitud, longitud y la recomendación como "valor" de calor)
+                    points.append([lat + lat_offset, lon + lon_offset, recomendacion[0]])
 
             # Crear fluctuaciones para hacer el gráfico dinámico
-            medias_predicciones = []
-            for year in años_futuros:
-                # Añadir un pequeño cambio aleatorio basado en los puntos generados para simular fluctuaciones
-                fluctuation = random.uniform(-0.1, 0.1)  # Cambio aleatorio de temperatura para simular fluctuaciones
-                fluctuated_temp = predicciones[0] + fluctuation
-                medias_predicciones.append(fluctuated_temp)
+            medias_recomendaciones = []
+            for i, temp in enumerate(temperaturas_futuras):
+                # Añadir fluctuaciones para cada predicción
+                fluctuation = random.uniform(-0.5, 0.5)  # Variación aleatoria de temperatura para cada año
+                fluctuated_temp = temp + fluctuation
+                medias_recomendaciones.append(fluctuated_temp)
 
             # Crear un mapa de calor con folium
             m = folium.Map(location=[lat, lon], zoom_start=10)
 
-            # Crear los puntos del mapa de calor (coordenadas y valores de temperatura)
+            # Crear los puntos del mapa de calor (coordenadas y valores de recomendación)
             HeatMap(points).add_to(m)
 
             # Guardar el mapa como archivo HTML en memoria
@@ -105,12 +136,12 @@ def predict(request):
             # Convertir el archivo HTML a base64
             map_base64 = base64.b64encode(map_file.getvalue()).decode('utf-8')
 
-            # Crear el gráfico de predicción de temperatura a lo largo de los años
+            # Crear el gráfico de recomendación de temperatura a lo largo de los años
             fig, ax = plt.subplots(figsize=(8, 5))
-            ax.plot(años_futuros, medias_predicciones, marker='o', color='r', label='Predicción de Temperatura')
+            ax.plot(años_futuros, medias_recomendaciones, marker='o', color='r', label='Recomendación de Temperatura')
             ax.set_xlabel('Año')
             ax.set_ylabel('Temperatura (°C)')
-            ax.set_title('Evolución de la Temperatura Predicha')
+            ax.set_title('Evolución de la Temperatura Recomendada')
             ax.grid(True)
             ax.legend()
 
@@ -120,12 +151,17 @@ def predict(request):
             buf.seek(0)
             img_str = base64.b64encode(buf.read()).decode('utf-8')
 
+            # Generar recomendaciones de texto utilizando los valores de temperatura (fluctuados para cada año)
+            texto_recomendaciones = generar_recomendaciones_texto(medias_recomendaciones, precipitacion, humedad)
+
             return JsonResponse({
-                'predicciones': medias_predicciones,
+                'recomendaciones': medias_recomendaciones,
                 'grafico': map_base64,  # Ahora devolvemos el mapa de calor en base64
                 'grafico_linea': img_str,  # Devolvemos el gráfico de la progresión de temperaturas en base64
-                'coordenadas': coordenadas[departamento]
+                'coordenadas': coordenadas[departamento],
+                'analisis_texto': texto_recomendaciones  # Agregar las recomendaciones generadas
             })
 
         except Exception as e:
+            print(f"Error en el servidor: {str(e)}")  # Depuración de errores
             return JsonResponse({"error": f"Hubo un error en el servidor: {str(e)}"}, status=500)
