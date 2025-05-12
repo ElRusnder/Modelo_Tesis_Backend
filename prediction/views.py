@@ -21,6 +21,7 @@ import pandas as pd
 # Cargar el modelo de predicción con joblib
 model_path = os.path.join(settings.BASE_DIR, 'prediction', 'random_forest_model_v2.pkl')  # Ruta correcta al archivo .pkl
 
+
 try:
     model = joblib.load(model_path)
     print(f"Modelo cargado correctamente: {type(model)}")  # Verifica el tipo de modelo cargado
@@ -29,16 +30,15 @@ except Exception as e:
     model_error = str(e)  # Guardamos el error al cargar el modelo
     print(f"Error al cargar el modelo: {model_error}")
 
-
 # Función para generar recomendaciones agrícolas basadas en las condiciones climáticas
 def generar_recomendaciones_texto(temperaturas_futuras, precipitacion_media, humedad_media):
-    # Convertir las predicciones a flotantes estándar de Python (para evitar np.float64)
     temperaturas_futuras = [float(temp) for temp in temperaturas_futuras]
+    temperatura_media = sum(temperaturas_futuras) / len(temperaturas_futuras)
 
-    # Recomendaciones basadas en las condiciones climáticas proyectadas (simplificado)
-    texto_entrada = f"Las predicciones de temperatura para los próximos 8 años son las siguientes: {temperaturas_futuras}. "
+    texto_entrada = f"Las predicciones de temperatura para los próximos años son las siguientes: {temperaturas_futuras}. "
+    texto_entrada += f"La temperatura media para el rango seleccionado es: {temperatura_media:.2f}°C. "
 
-    if max(temperaturas_futuras) > 30:
+    if temperatura_media > 30:
         texto_entrada += "Con temperaturas muy altas proyectadas, se recomienda optar por cultivos más resistentes al calor, como el maíz, sorgo o ciertos tipos de frijoles. "
         texto_entrada += "También es importante implementar técnicas de riego por goteo y usar sistemas de sombreo para reducir el estrés térmico."
     elif precipitacion_media > 150:
@@ -49,35 +49,34 @@ def generar_recomendaciones_texto(temperaturas_futuras, precipitacion_media, hum
 
     return texto_entrada
 
-
 # Función para recomendar cultivo y riego
 def recomendar_cultivo_y_riego(temperaturas_futuras, precipitacion_media, humedad_media):
-    # Modelo entrenado para recomendar cultivo (simplificado)
-    # Usamos la temperatura, precipitación y humedad para predecir el cultivo
-    X = np.array([[30, 120, 60], [25, 200, 70], [35, 100, 50], [28, 150, 65]])  # Ejemplo de datos
-    y = ['Maíz', 'Arroz', 'Frijoles', 'Papas']
+    temperatura_media = sum(temperaturas_futuras) / len(temperaturas_futuras)  # Calcular la temperatura media
 
-    modelo_cultivo = DecisionTreeClassifier()
-    modelo_cultivo.fit(X, y)
-
-    # Predecir el cultivo recomendado basado en las condiciones climáticas
-    cultivo_recomendado = modelo_cultivo.predict([[max(temperaturas_futuras), precipitacion_media, humedad_media]])[0]
-
-    # Descripción detallada del cultivo recomendado y riego
-    if cultivo_recomendado == 'Maíz':
+    # Determinar la recomendación en función de la temperatura media y las condiciones climáticas
+    if temperatura_media > 30:
+        cultivo_recomendado = 'Maíz'
         recomendacion_riego = "El maíz es un cultivo resistente al calor, pero requiere de un riego frecuente para maximizar el rendimiento. Se recomienda utilizar riego por goteo y sombrear las plantas en climas muy calurosos."
         descripcion_cultivo = "El maíz es un cultivo de alto rendimiento en temperaturas cálidas y suelos bien irrigados. Requiere un manejo intensivo del agua."
-    elif cultivo_recomendado == 'Arroz':
+    elif precipitacion_media > 150:
+        cultivo_recomendado = 'Arroz'
         recomendacion_riego = "El arroz necesita grandes cantidades de agua, por lo que el riego inundado es la mejor técnica. Se recomienda controlar las lluvias para evitar inundaciones excesivas."
         descripcion_cultivo = "El arroz es adecuado para suelos húmedos y requiere inundación para un crecimiento óptimo, lo que lo hace ideal en regiones con alta pluviosidad."
-    elif cultivo_recomendado == 'Frijoles':
+    elif temperatura_media < 25:
+        cultivo_recomendado = 'Frijoles'
         recomendacion_riego = "Los frijoles prefieren un riego moderado, que mantenga la humedad del suelo sin llegar al exceso. Usar sistemas de riego por goteo es lo más recomendable."
         descripcion_cultivo = "El frijol es un cultivo de ciclo corto que se adapta bien a climas templados y suelos bien drenados."
     else:
+        cultivo_recomendado = 'Papas'
         recomendacion_riego = "Las papas requieren de un manejo de riego eficiente, preferentemente por goteo, para evitar el exceso de humedad y la formación de hongos."
         descripcion_cultivo = "Las papas prosperan en climas frescos y suelos bien aireados. Son muy sensibles a las condiciones de humedad, por lo que es esencial un riego controlado."
 
-    return cultivo_recomendado, recomendacion_riego, descripcion_cultivo
+    # Devolver la recomendación única
+    return {
+        "cultivo_recomendado": cultivo_recomendado,
+        "recomendacion_riego": recomendacion_riego,
+        "descripcion_cultivo": descripcion_cultivo
+    }
 
 
 @csrf_exempt
@@ -85,6 +84,19 @@ def predict(request):
     if request.method == "POST":
         try:
             data = json.loads(request.body)
+
+            # Obtener la fecha de inicio y final de la solicitud
+            start_year = int(data.get("start_year"))
+            start_month = int(data.get("start_month"))
+            end_year = int(data.get("end_year"))
+            end_month = int(data.get("end_month"))
+
+            # Validaciones de las fechas
+            if end_year - start_year > 8:
+                return JsonResponse({"error": "El rango de predicción no puede ser mayor a 8 años."}, status=400)
+
+            if end_year == start_year and end_month < start_month:
+                return JsonResponse({"error": "El mes final no puede ser anterior al mes de inicio."}, status=400)
 
             departamento = data.get("departamento")
             coordenadas = {
@@ -109,32 +121,31 @@ def predict(request):
             temperatura = clima_data["main"]["temp"]
             precipitacion = clima_data.get("rain", {}).get("1h", 0)
             humedad = clima_data["main"]["humidity"]
-            año = data.get("año")
 
-            if not año:
-                return JsonResponse({"error": "Falta el campo de año"}, status=400)
+            # Generar las predicciones para los meses y años seleccionados
+            años_futuros = list(range(start_year, end_year + 1))
+            temperaturas_futuras = []
+            meses_futuros = []
+            for year in años_futuros:
+                for month in range(1, 13):
+                    if year == start_year and month < start_month:
+                        continue
+                    if year == end_year and month > end_month:
+                        continue
+                    input_data = pd.DataFrame([[temperatura, precipitacion, humedad, 0, year]],
+                                              columns=['humedad_relativa', 'precipitacion_mm', 'velocidad_viento', 'año', 'mes'])
+                    temperaturas_futuras.append(model.predict(input_data)[0])
+                    meses_futuros.append(f'{month}-{year}')
 
-            # Usar pandas para asegurarnos de que los datos tienen nombres de columnas correctos
-            input_data = pd.DataFrame([[temperatura, precipitacion, humedad, 0, año]],
-                                      columns=["temperatura", "precipitacion_mm", "humedad_relativa",
-                                               "velocidad_viento", "year"])
-
-            if model is None:
-                return JsonResponse({"error": f"Error al cargar el modelo: {model_error}"}, status=500)
-
-            # Predicciones de temperatura para los próximos años
-            años_futuros = list(range(año, año + 8))  # Recomendaciones para los próximos 8 años
-            temperaturas_futuras = [model.predict(input_data)[0] for year in años_futuros]
-
-            # Generar fluctuaciones para hacer el gráfico dinámico
+            # Crear fluctuaciones para el gráfico
             medias_recomendaciones = [temp + random.uniform(-0.5, 0.5) for temp in temperaturas_futuras]
 
-            # Obtener cultivo recomendado y riego
-            cultivo_recomendado, recomendacion_riego, descripcion_cultivo = recomendar_cultivo_y_riego(temperaturas_futuras, precipitacion, humedad)
+            # Obtener las recomendaciones de cultivo y riego
+            recomendaciones = recomendar_cultivo_y_riego(temperaturas_futuras, precipitacion, humedad)
 
-            # Crear mapa de calor con más puntos dispersos
+            # Crear mapa de calor
             points = []
-            for _ in range(50):  # Generamos 50 puntos dispersos por recomendación
+            for _ in range(50):
                 lat_offset = random.uniform(-0.3, 0.3)
                 lon_offset = random.uniform(-0.3, 0.3)
                 points.append([lat + lat_offset, lon + lon_offset, temperaturas_futuras[0]])
@@ -146,14 +157,14 @@ def predict(request):
             m.save(map_file, close_file=False)
             map_base64 = base64.b64encode(map_file.getvalue()).decode('utf-8')
 
-            # Crear el gráfico de recomendación de temperatura a lo largo de los años
-            fig, ax = plt.subplots(figsize=(8, 5))
-            ax.plot(años_futuros, medias_recomendaciones, marker='o', color='r', label='Recomendación de Temperatura')
-            ax.set_xlabel('Año')
+            # Crear gráfico de barras para la temperatura
+            fig, ax = plt.subplots(figsize=(10, 5))
+            ax.bar(meses_futuros, medias_recomendaciones, color='skyblue')
+            ax.set_xlabel('Mes-Año')
             ax.set_ylabel('Temperatura (°C)')
-            ax.set_title('Evolución de la Temperatura Recomendada')
+            ax.set_title('Predicción de Temperatura por Mes y Año')
+            ax.set_xticklabels(meses_futuros, rotation=45, ha='right')
             ax.grid(True)
-            ax.legend()
 
             buf = io.BytesIO()
             plt.savefig(buf, format='png')
@@ -163,14 +174,11 @@ def predict(request):
             texto_recomendaciones = generar_recomendaciones_texto(medias_recomendaciones, precipitacion, humedad)
 
             return JsonResponse({
-                'cultivo_recomendado': cultivo_recomendado,
-                'recomendacion_riego': recomendacion_riego,
-                'descripcion_cultivo': descripcion_cultivo,
-                'temperaturas_futuras': medias_recomendaciones,
+                'cultivo_recomendado': recomendaciones,  # Se pasan las recomendaciones completas
                 'grafico': map_base64,  # Mapa en base64
-                'grafico_linea': img_str,  # Gráfico de la progresión de temperaturas
+                'grafico_barras': img_str,  # Gráfico de barras de temperatura
                 'coordenadas': coordenadas[departamento],
-                'analisis_texto': texto_recomendaciones  # Agregar las recomendaciones generadas
+                'analisis_texto': texto_recomendaciones  # Recomendaciones generadas
             })
 
         except Exception as e:
